@@ -1,0 +1,5 @@
+-r requirements-report.txt
+mypy
+scipy-stubs
+types-reportlab
+flake8

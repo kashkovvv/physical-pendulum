@@ -1,238 +1,909 @@
-"""Создать PDF и подтверждающие данные: python -m report.build_report."""
-from pathlib import Path
+"""Сборка PDF-отчёта: python -m report.build_report (из корня проекта).
+
+Скрипт выполняет все расчёты, сохраняет рисунки в report/figures и собирает
+report/report.pdf. Все числа в тексте берутся из результатов расчёта.
+"""
+
+from collections.abc import Sequence
+import re
 from io import BytesIO
-from xml.sax.saxutils import escape
+from math import degrees, log10, radians, sin
+from pathlib import Path
+
 import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib import font_manager
-import numpy as np
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.enums import TA_CENTER
-from physical_pendulum.experiments import run_experiments, save_experiments
-from physical_pendulum.plots import create_figures
 
-ROOT=Path(__file__).resolve().parents[1]
-OUT=ROOT/'report'
+matplotlib.use("Agg")
 
+from matplotlib import font_manager, mathtext  # noqa: E402
+from matplotlib import pyplot as plt  # noqa: E402
+from matplotlib.font_manager import FontProperties  # noqa: E402
+from reportlab.lib import colors  # noqa: E402
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT  # noqa: E402
+from reportlab.lib.pagesizes import A4  # noqa: E402
+from reportlab.lib.styles import ParagraphStyle  # noqa: E402
+from reportlab.lib.utils import ImageReader  # noqa: E402
+from reportlab.pdfbase import pdfmetrics  # noqa: E402
+from reportlab.pdfbase.ttfonts import TTFont  # noqa: E402
+from reportlab.pdfgen.canvas import Canvas  # noqa: E402
+from reportlab.platypus import (  # noqa: E402
+    Flowable,
+    Image,
+    KeepTogether,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+from reportlab.platypus.doctemplate import BaseDocTemplate  # noqa: E402
 
-def main():
-    data=run_experiments()
-    p=data['model']; m=data['metrics']
-    save_experiments(data,OUT/'data')
-    figures=create_figures(data)
-    (OUT/'figures').mkdir(exist_ok=True)
-    for name,fig in figures.items():
-        fig.savefig(OUT/'figures'/f'{name}.png',dpi=200)
-    plt.close('all')
-    pdfmetrics.registerFont(TTFont('DV',font_manager.findfont('DejaVu Sans')))
-    pdfmetrics.registerFont(TTFont('DVB',font_manager.findfont(font_manager.FontProperties(family='DejaVu Sans',weight='bold'))))
-    pdfmetrics.registerFontFamily('DV',normal='DV',bold='DVB',italic='DV',boldItalic='DVB')
-    styles=getSampleStyleSheet()
-    styles.add(ParagraphStyle(name='BodyRu',fontName='DV',fontSize=9.4,leading=14,spaceAfter=8,textColor=colors.HexColor('#243747')))
-    styles.add(ParagraphStyle(name='HeadRu',fontName='DVB',fontSize=17,leading=22,spaceAfter=14,textColor=colors.HexColor('#163c56')))
-    styles.add(ParagraphStyle(name='TitleRu',fontName='DVB',fontSize=28,leading=35,spaceAfter=18,textColor=colors.HexColor('#163c56')))
-    styles.add(ParagraphStyle(name='SmallRu',fontName='DV',fontSize=8,leading=11,spaceAfter=6))
-    styles.add(ParagraphStyle(name='CaptionRu',fontName='DV',fontSize=8,leading=11,spaceAfter=12,alignment=TA_CENTER))
-    story=[]
-    def body(text): story.append(Paragraph(text,styles['BodyRu']))
-    def head(text): story.append(Paragraph(text,styles['HeadRu']))
-    def page(): story.append(PageBreak())
-    def chart(name,caption,width=475):
-        fig=Image(str(OUT/'figures'/f'{name}.png'))
-        fig.drawHeight=fig.imageHeight*width/fig.imageWidth; fig.drawWidth=width
-        story.append(fig); story.append(Paragraph(caption,styles['CaptionRu']))
-    def equation(text):
-        fig=plt.figure(figsize=(7,.46)); fig.text(.5,.5,'$'+text+'$',ha='center',va='center',fontsize=13)
-        buf=BytesIO(); fig.savefig(buf,format='png',dpi=200,bbox_inches='tight',pad_inches=.12); plt.close(fig); buf.seek(0)
-        im=Image(buf); scale=min(1,465/im.imageWidth); im.drawWidth=im.imageWidth*scale; im.drawHeight=im.imageHeight*scale
-        story.append(im); story.append(Spacer(1,7))
-    def table(headers,rows,widths):
-        values=[[Paragraph(escape(str(c)),styles['SmallRu']) for c in headers]]
-        values += [[Paragraph(escape(str(c)),styles['SmallRu']) for c in row] for row in rows]
-        t=Table(values,colWidths=widths,repeatRows=1,hAlign='LEFT')
-        t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#e4edf3')),('VALIGN',(0,0),(-1,-1),'TOP'),
-                              ('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,colors.HexColor('#f4f7f9')]),
-                              ('BOTTOMPADDING',(0,0),(-1,-1),5),('TOPPADDING',(0,0),(-1,-1),5),
-                              ('LINEBELOW',(0,0),(-1,0),.5,colors.HexColor('#9bb2c2'))]))
-        story.append(t); story.append(Spacer(1,10))
-    def footer(canvas,doc):
-        canvas.setFont('DV',8); canvas.setFillColor(colors.HexColor('#607787'))
-        canvas.drawString(48,28,'М5 · Физический маятник · Вычислительный проект')
-        canvas.drawRightString(547,28,str(doc.page))
-
-    story.append(Spacer(1,16))
-    story.append(Paragraph('Физический<br/>маятник',styles['TitleRu']))
-    body('<b>Проект М5 · Цифровизация физических процессов</b><br/>Основная часть задания. ВШПИ, 2026–2027 учебный год.')
-    head('От реального прибора к проверяемой модели')
-    body('Рассматривается учебный опыт по определению ускорения свободного падения с помощью составного маятника. '
-         'Прототип — лабораторный прибор PASCO ME-9821 [2]. Модель учитывает массу стержня и конечные размеры груза. '
-         'Исследуется, когда формула малых колебаний достаточно точна и как меняются колебания при слабом трении.')
-    chart('geometry','Рис. 1. Принятая геометрия; положение груза выбрано для расчётного опыта.',400)
-    body('Выполнены расчёт момента инерции, свободные нелинейные колебания, зависимость периода от амплитуды, '
-         'проверка энергии, затухание и сравнение с теорией. Неваляшка, связанные маятники и вынужденные колебания '
-         'относятся к дополнительным пунктам и не рассматриваются [1].')
-    body('<b>Статус результатов:</b> вычислительные эксперименты с реалистичной геометрией. Натурные измерения не проводились.')
-
-    page(); head('1. Исходные данные и момент инерции')
-    table(['Величина','Значение','Происхождение'],[
-        ['Длина / радиус стержня','0,417 м / 0,002 м','PASCO [2]'],
-        ['Масса стержня / груза','0,001 кг / 0,100 кг','PASCO [2]'],
-        ['Размеры груза w × h × d','28 × 28 × 15 мм','Внешние размеры [2]'],
-        ['Расстояние до центра груза a','0,350 м','Выбрано в модели'],
-        ['Ускорение g','9,80665 м/с²','Стандартное значение'],
-        ['Полувремя амплитуды','30 с','Сценарий малого трения']], [185,133,157])
-    body('Стержень считается однородным цилиндром, груз — однородным прямоугольным блоком. Ось проходит через '
-         'верхний конец стержня; глубина d направлена вдоль оси. Отверстия и крепёж отдельно не моделируются. '
-         'Паспортная масса блока распределена по его внешнему объёму; плотность сплошной латуни не предполагается.')
-    body('По определению I = ∫r² dm и теореме Штейнера:')
-    equation(r'I_r=m_r\left(\frac{L^2}{3}+\frac{R^2}{4}\right),\quad I_b=m_b\left(a^2+\frac{w^2+h^2}{12}\right)')
-    equation(r'I=I_r+I_b,\quad S=m_rL/2+m_ba,\quad l=S/(m_r+m_b),\quad l_{eq}=I/S')
-    body(f'Для выбранной конфигурации: I<sub>r</sub> = {p.rod_inertia:.8f} кг·м²; '
-         f'I<sub>b</sub> = {p.bob_inertia:.8f} кг·м²; <b>I = {p.inertia:.8f} кг·м²</b>. '
-         f'Масса M = {p.mass:.3f} кг, центр масс l = {p.center_of_mass:.6f} м, '
-         f'приведённая длина l<sub>eq</sub> = {p.equivalent_length:.6f} м.')
-    body('Глубина d не входит в момент инерции относительно выбранной оси при фиксированной массе. '
-         'Формулы проверяются независимым численным интегрированием квадрата расстояния по распределению масс. '
-         'Дополнительные цифры характеризуют расчёт модели, а не точность паспортных размеров.')
-
-    page(); head('2. Уравнения и теоретические ориентиры')
-    body('Угол θ отсчитывается от нижней вертикали; ω = dθ/dt. Момент тяжести равен −gS sin θ, '
-         'момент вязкого трения — −bω. Начальные условия опытов: θ(0) = A, ω(0) = 0 [3, 4].')
-    equation(r'\dot\theta=\omega,\qquad I\dot\omega=-gS\sin\theta-b\omega')
-    equation(r'E=\frac{I\omega^2}{2}+gS(1-\cos\theta),\quad \dot E=-b\omega^2,\quad E+Q=E_0')
-    body('Здесь Q(t) = ∫bω²dt — энергия, перешедшая в тепло. Без трения сохраняется E; с трением — E+Q. '
-         'При малых углах sin θ ≈ θ и ω₀² = gS/I. Для произвольной амплитуды менее 180° период выводится '
-         'из интеграла энергии подстановкой sin(θ/2) = sin(A/2) sin u:')
-    equation(r'T_0=2\pi\sqrt{I/(gS)},\qquad T(A)=\frac{4}{\omega_0}K(m),\quad m=\sin^2(A/2)')
-    equation(r'K(m)=\int_0^{\pi/2}\frac{du}{\sqrt{1-m\sin^2u}}')
-    body('В SciPy ellipk аргументом служит параметр m, а не модуль √m [6]. При A → 0 период стремится к T₀; '
-         'при A → 180° он расходится. Точное нелинейное решение для контроля всей траектории:')
-    equation(r'\theta(t)=2\arcsin\{k\,\mathrm{sn}[K(k^2)-\omega_0t\mid k^2]\},\quad k=\sin(A/2)')
-    body('Для слабого трения β = b/(2I), ω<sub>d</sub> = √(ω₀²−β²). Линейное решение с нулевой начальной скоростью:')
-    equation(r'\theta(t)=A e^{-\beta t}\left[\cos(\omega_dt)+\frac{\beta}{\omega_d}\sin(\omega_dt)\right]')
-    body('Синусное слагаемое обеспечивает ω(0) = 0. Амплитуда спадает экспоненциально, '
-         'T<sub>d</sub> = 2π/ω<sub>d</sub>, время уменьшения амплитуды вдвое τ = ln 2/β. '
-         'При больших амплитудах эта линейная формула используется только как предельный ориентир.')
-
-    page(); head('3. Численный метод и воспроизводимость')
-    body('Система для (θ, ω, Q) решается методом DOP853 из SciPy solve_ivp [5]. Это явный метод Рунге–Кутты '
-         'восьмого порядка с автоматическим выбором шага. Базовые допуски: rtol = 10⁻¹⁰, atol = 10⁻¹² '
-         'для величин в СИ. Максимальный шаг T₀/30 позволяет уверенно находить пересечения и экстремумы.')
-    body('Период измеряется по интервалам между пересечениями θ = 0 в одном направлении (ω &lt; 0), '
-         'а не по расстоянию между соседними отсчётами CSV. Максимумы находятся как события ω = 0 '
-         'с переходом от положительной скорости к отрицательной. Сетка вывода не является сеткой интегратора.')
-    table(['Опыт','Параметры','Проверка'],[
-        ['Свободные колебания','60°; 20T₀','Точное решение; E = const'],
-        ['Период и амплитуда','1–170°; 6T(A)','Эллиптический интеграл'],
-        ['Затухание','5° и 60°; 60 с','Огибающая; E+Q = const'],
-        ['Положение груза','15, 25, 35, 40 см; 5°','Пересчёт I и S'],
-        ['Сходимость','120°; 20T(A)','rtol от 10⁻⁴ до 10⁻¹⁰']], [150,150,175])
-    body('Относительная невязка энергии определяется как max|E(t)−E₀|/E₀; при трении вместо E берётся E+Q. '
-         'Проверяется вся записанная траектория, а не только её последний отсчёт. Невязка периода: |Tчисл/Tтеор−1|.')
-    body('<b>Воспроизведение:</b> из корня проекта выполнить установку requirements.txt, затем '
-         '<font face="DVB">python -m physical_pendulum --no-show</font>. '
-         'Для отчёта: установить requirements-report.txt и выполнить '
-         '<font face="DVB">python -m report.build_report</font>. Тесты: '
-         '<font face="DVB">python -m unittest discover -s tests -v</font>.')
-    body('В report/data сохранены временные ряды, таблицы периодов, положения груза и сходимости, '
-         'а также summary.json с исходными параметрами и версиями библиотек. Отчёт собирается из этих же расчётов. '
-         'Сборка архива запускает тесты и сохраняет их вывод в report/test-results.txt.')
-
-    page(); head('4. Свободные колебания и энергия')
-    chart('free','Рис. 2. Колебания при 60° без трения; расчёт и точное нелинейное решение.',475)
-    body(f'Период малых колебаний T₀ = <b>{p.period:.6f} с</b>. При 60° период '
-         f'T = {data["periods"][4]["numerical_s"]:.6f} с. Фазовая траектория замкнута; '
-         'кинетическая и потенциальная энергии периодически переходят друг в друга.')
-    body(f'На интервале 20T₀ относительная невязка полной энергии равна '
-         f'<b>{m["free_energy_error"]:.2e}</b>, максимальное расхождение угла с точным нелинейным '
-         f'решением — {m["free_exact_angle_error_rad"]:.2e} рад. Видимое совпадение кривых подкреплено количественным сравнением.')
-    body('Малое ненулевое изменение E на нижнем правом графике — ошибка интегрирования и интерполяции, '
-         'а не физическое затухание. Метод не объявляется точно сохраняющим энергию: допустимость ошибки '
-         'проверяется на выбранном интервале и дополнительно исследуется сходимость.')
-
-    page(); head('5. Зависимость периода от амплитуды')
-    chart('period','Рис. 3. Нелинейный период и относительная ошибка численного измерения.',475)
-    table(['A, град','T числ, с','T теория, с','Рост к T₀, %','Отн. ошибка'],
-          [[r['amplitude_deg'],f"{r['numerical_s']:.6f}",f"{r['theory_s']:.6f}",f"{r['excess_percent']:.3f}",f"{r['relative_error']:.2e}"] for r in data['periods']],
-          [65,100,100,105,105])
-    body('Период увеличивается с амплитудой: на 7,32% при 60° и на 18,03% при 90°. '
-         'Около верхнего неустойчивого положения маятник движется медленно, поэтому при приближении к 180° '
-         'период резко растёт. 170° — проверка нелинейной модели, не утверждение о доступном ходе реальной стойки.')
-
-    page(); head('6. Малое трение и затухание')
-    body(f'Задано τ = 30 с, откуда β = {p.beta:.6f} с⁻¹ и b = {p.damping:.6e} Н·м·с. '
-         f'Отношение β/ω₀ = {p.beta/p.frequency:.4f}, добротность ≈ {m["quality_factor"]:.1f}: '
-         'это режим слабого затухания. Эти значения — параметры сценария, не измерения производителя.')
-    chart('damping','Рис. 4. Затухание при 5° и баланс механической энергии с теплом.',475)
-    body(f'По наклону ln A(t) для максимумов получено β = {m["beta_fit_s_inverse"]:.6f} с⁻¹ '
-         f'(теория {p.beta:.6f} с⁻¹). Период линейной теории {m["damped_period_linear_s"]:.6f} с; '
-         f'средний численный период {m["damped_period_measured_s"]:.6f} с. '
-         'Небольшое превышение объясняется конечной амплитудой.')
-    body(f'Максимальная разность линейного и нелинейного угла за 60 с — '
-         f'{m["damped_linear_max_error_deg"]:.3f}°. Фазовая ошибка накапливается даже при 5°. '
-         f'Невязка баланса E+Q равна {m["damped_balance_error"]:.2e}. '
-         'Механическая энергия убывает, а сумма с выделившимся теплом сохраняется в пределах погрешности.')
-
-    page(); head('7. Большая амплитуда и прикладной опыт')
-    chart('large_damping','Рис. 5. При затухании колебаний с 60° локальный период стремится к малому пределу.',475)
-    body(f'Линейная теория не описывает начальный участок при 60°: по мере уменьшения амплитуды '
-         f'уменьшается и период. Невязка E+Q за 60 с составляет {m["large_damped_balance_error"]:.2e}.')
-    chart('practical','Рис. 6. Перестановка груза и ошибка определения g по формуле малых углов.',475)
-    body('При обработке измерений g<sub>est</sub> = 4π²I/(S T²). Если не учитывать амплитуду, '
-         f'при 5° получается {data["periods"][1]["inferred_g"]:.4f} м/с² (ошибка около −0,095%), '
-         f'а при 60° — {data["periods"][4]["inferred_g"]:.4f} м/с² (около −13,17%). '
-         'Практический вывод: измерять при малой амплитуде или вводить нелинейную поправку.')
-
-    page(); head('8. Сходимость и автоматические проверки')
-    chart('convergence','Рис. 7. Ужесточение допуска уменьшает ошибки периода, энергии и траектории.',475)
-    table(['rtol','Вызовы RHS','Ошибка T','Ошибка E','Ошибка θ, рад'],
-          [[f"{r['rtol']:.0e}",r['nfev'],f"{r['relative_period_error']:.2e}",f"{r['energy_error']:.2e}",f"{r['max_angle_error_rad']:.2e}"] for r in data['convergence']],
-          [70,90,105,105,105])
-    body('В опыте сходимости ограничение шага ослаблено до T₀, чтобы результат зависел от заданного допуска. '
-         'Расчёт ведётся 20 периодов при 120°. Уменьшение допуска с 10⁻⁴ до 10⁻¹⁰ снижает ошибку траектории '
-         'примерно с 0,088 рад до 5,3·10⁻⁸ рад. Это проверка на независимом точном решении.')
-    body('Автотесты проверяют интегральный момент инерции, равновесие, малые углы, периоды до 170°, '
-         'полную траекторию, отрицательное отклонение, начальный толчок, диссипацию, полувремя затухания, '
-         'несколько положений груза, сходимость и некорректные входные данные. Критерии: ошибка периода '
-         '&lt; 2·10⁻⁸, относительная невязка энергии &lt; 10⁻⁸ в контрольных сценариях. '
-         'Число и результаты выполненных тестов зафиксированы в test-results.txt внутри архива.')
-
-    page(); head('9. Выводы, ограничения и источники')
-    body('1. Момент инерции вычислен по форме составного тела и проверен интегрированием распределения масс. '
-         '2. Нелинейные свободные колебания согласуются с точным решением. '
-         '3. Период существенно зависит от амплитуды; это даёт измеримую систематическую ошибку в опыте по определению g. '
-         '4. Слабое вязкое трение приводит к затуханию, согласованному с линейной теорией при малых углах. '
-         '5. Проверены сохранение энергии без трения, её баланс с теплом при трении и численная сходимость.')
-    body('<b>Границы применимости.</b> Тело абсолютно жёсткое, ось неподвижна. Не учитываются инерция датчика, '
-         'геометрия крепежа, люфты, сухое трение и квадратичное сопротивление воздуха. Паспортные размеры '
-         'прибора идеализированы. Полувремя 30 с необходимо заменить измеренным при натурной проверке. '
-         'Совпадение с теорией подтверждает численное решение выбранной модели, а не точность воспроизведения реального прибора.')
-    body('<b>Как проверить экспериментально.</b> Снять несколько периодов при 5°, измерить положение груза и '
-         'его размеры, сравнить оценку g с местным значением. По последовательным максимумам построить ln A(t) '
-         'и определить β, затем b = 2Iβ. Если ln A(t) не является прямой, пересмотреть закон трения.')
-    sources=[
-        ('[1] П. В. Попов. ВШПИ_прог_26-27. Программа дисциплины, 2026, стр. 12–13. Исходный файл предоставлен пользователем.',None),
-        ('[2] PASCO. Centripetal Force Pendulum ME-9821. Размеры и массы.', 'https://www.pasco.com/products/lab-apparatus/mechanics/centripetal-force-and-rotation/centripetal-force-pendulum'),
-        ('[3] OpenStax. University Physics, §15.4 Pendulums.', 'https://openstax.org/books/university-physics-volume-1/pages/15-4-pendulums'),
-        ('[4] OpenStax. §15.5 Damped Oscillations.', 'https://openstax.org/books/university-physics-volume-1/pages/15-5-damped-oscillations'),
-        ('[5] SciPy. solve_ivp: DOP853, допуски и события.', 'https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html'),
-        ('[6] SciPy. ellipk: определение K(m).', 'https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.ellipk.html'),
-        ('[7] М3 «Полёт на Марс». Референс организации проекта.', 'https://github.com/kashkovvv/mars-flight')]
-    for label,url in sources:
-        text=escape(label)
-        if url: text+=f' <link href="{url}" color="#24658a">Открыть источник</link>.'
-        story.append(Paragraph(text,styles['SmallRu']))
-    body('Дата обращения: 03.11.2026. Полные URL и статус параметров приведены в docs/sources.md. '
-         'Код, исходные данные, графики и инструкции включены в архив проекта.')
-    doc=SimpleDocTemplate(str(OUT/'report.pdf'),pagesize=(595.28,841.89),rightMargin=48,leftMargin=48,
-                          topMargin=45,bottomMargin=48,title='М5. Физический маятник',author='Учебный проект М5')
-    doc.build(story,onFirstPage=footer,onLaterPages=footer)
-    print(OUT/'report.pdf')
+from physical_pendulum.config import (  # noqa: E402
+    DEFAULT_INTEGRATION,
+    DEFAULT_PENDULUM,
+    FIGURE_DPI,
+    FREE_DURATION_S,
+    PERIOD_DURATION_S,
+)
+from physical_pendulum.pendulum import (  # noqa: E402
+    ExperimentResults,
+    fit_decay_rate_1_s,
+    run_experiments,
+)
+from physical_pendulum.plots import create_pendulum_figures  # noqa: E402
+from physical_pendulum.theory import (  # noqa: E402
+    damped_period_s,
+    exact_period_s,
+    series_period_s,
+    small_angle_period_s,
+)
 
 
-if __name__=='__main__': main()
+# Папки и файлы отчёта.
+REPORT_DIR: Path = Path(__file__).resolve().parent
+FIGURES_DIR: Path = REPORT_DIR / "figures"
+PDF_PATH: Path = REPORT_DIR / "report.pdf"
+
+# Углы, для которых в отчёте показано отношение sinθ/θ, град.
+SINE_RATIO_ANGLES_DEG: tuple[float, ...] = (5.0, 60.0, 90.0)
+
+# Типографские знаки минуса и умножения для текста PDF.
+MINUS: str = "\u2212"
+TIMES: str = "\u00d7"
+
+# Дефис, который в тексте означает минус: после пробела, скобки, знака
+# равенства, черты модуля или начала степени и перед числом или буквой.
+MINUS_PATTERN: re.Pattern[str] = re.compile(r"(?<=[\s(=|>])-(?=[\s\w(])")
+
+# Поля страницы и ширина текста, пт.
+MARGIN: float = 50.0
+FRAME_WIDTH: float = A4[0] - 2.0 * MARGIN
+
+# Ширина колонки с номером формулы, пт.
+NUMBER_WIDTH: float = 36.0
+
+# Размер шрифта формул, пт, и разрешение их отрисовки, точек на дюйм.
+EQUATION_SIZE: float = 11.0
+EQUATION_DPI: int = 300
+
+# Шрифт с кириллицей и греческими буквами.
+FONT: str = "DejaVuSans"
+FONT_BOLD: str = "DejaVuSans-Bold"
+FONT_ITALIC: str = "DejaVuSans-Oblique"
+FONT_BOLD_ITALIC: str = "DejaVuSans-BoldOblique"
+
+ACCENT = colors.HexColor("#163c56")
+MUTED = colors.HexColor("#5d7080")
+BODY = ParagraphStyle("Body", fontName=FONT, fontSize=10, leading=14, spaceAfter=4)
+HEADING = ParagraphStyle(
+    "Heading", fontName=FONT_BOLD, fontSize=13.5, leading=18, spaceBefore=10,
+    spaceAfter=6, textColor=ACCENT, keepWithNext=1,
+)
+TITLE = ParagraphStyle(
+    "Title", fontName=FONT_BOLD, fontSize=30, leading=38, spaceAfter=18,
+    textColor=ACCENT,
+)
+SUBTITLE = ParagraphStyle("Subtitle", fontName=FONT, fontSize=13, leading=19)
+CAPTION = ParagraphStyle(
+    "Caption", fontName=FONT, fontSize=8.5, leading=11, spaceBefore=2,
+    spaceAfter=10, alignment=TA_CENTER, textColor=MUTED,
+)
+CELL = ParagraphStyle("Cell", fontName=FONT, fontSize=8.5, leading=11)
+CELL_HEADER = ParagraphStyle("CellHeader", parent=CELL, fontName=FONT_BOLD)
+LEAD = ParagraphStyle("Lead", parent=BODY, keepWithNext=1)
+NUMBER = ParagraphStyle("Number", parent=BODY, alignment=TA_RIGHT, spaceAfter=0)
+SOURCE = ParagraphStyle(
+    "Source", parent=BODY, fontSize=9, leading=12.5, leftIndent=18,
+    firstLineIndent=-18,
+)
+
+SOURCES: tuple[str, ...] = (
+    "Попов П. В. Цифровизация физических процессов: программа курса и задания "
+    "проектов (ВШПИ_прог_26-27). Проект М5 «Физический маятник», с. 12-13.",
+    "OpenStax. University Physics, Volume 1. § 15.4 Pendulums. "
+    "https://openstax.org/books/university-physics-volume-1/pages/15-4-pendulums",
+    "OpenStax. University Physics, Volume 1. § 15.5 Damped Oscillations. "
+    "https://openstax.org/books/university-physics-volume-1/pages/"
+    "15-5-damped-oscillations",
+    "SciPy. scipy.integrate.solve_ivp. https://docs.scipy.org/doc/scipy/"
+    "reference/generated/scipy.integrate.solve_ivp.html",
+    "SciPy. scipy.special.ellipk. https://docs.scipy.org/doc/scipy/"
+    "reference/generated/scipy.special.ellipk.html",
+)
+
+# Номера формул по меткам; заполняются по мере сборки текста.
+EQUATION_NUMBERS: dict[str, int] = {}
+
+# Сокращения для нижних индексов в формулах mathtext.
+ST: str = r"_{\mathrm{ст}}"
+GR: str = r"_{\mathrm{гр}}"
+
+
+def number(value: float, digits: int) -> str:
+    """Число с десятичной запятой и типографским минусом."""
+    return f"{value:.{digits}f}".replace(".", ",").replace("-", MINUS)
+
+
+def scientific(value: float, digits: int = 1) -> str:
+    """Число вида 1,2·10⁻¹⁴ в разметке Paragraph."""
+    mantissa, exponent = f"{value:.{digits}e}".split("e")
+    power = str(int(exponent)).replace("-", MINUS)
+    return f"{number(float(mantissa), digits)}·10<super>{power}</super>"
+
+
+def power(value: float) -> str:
+    """Степень десяти вида 10⁻¹⁰ в разметке Paragraph."""
+    exponent = str(round(log10(value))).replace("-", MINUS)
+    return f"10<super>{exponent}</super>"
+
+
+def tex_number(value: float, digits: int) -> str:
+    """Число с десятичной запятой для формулы mathtext."""
+    return f"{value:.{digits}f}".replace(".", "{,}")
+
+
+def tex_scientific(value: float, digits: int = 1) -> str:
+    """Число вида 1,2 x 10⁻¹⁴ для формулы mathtext."""
+    mantissa, exponent = f"{value:.{digits}e}".split("e")
+    return (f"{tex_number(float(mantissa), digits)}"
+            rf"\times 10^{{{int(exponent)}}}")
+
+
+def unit(text: str) -> str:
+    """Единица измерения прямым шрифтом после числа в формуле."""
+    return r"\ \mathrm{" + text + "}"
+
+
+def typeset(text: str) -> str:
+    """Заменить ASCII-минус в тексте на типографский знак."""
+    return MINUS_PATTERN.sub(MINUS, text)
+
+
+def paragraph(text: str) -> Paragraph:
+    """Абзац; абзац без точки в конце держится вместе с формулой после него."""
+    style = BODY if text.rstrip().endswith((".", ")")) else LEAD
+    return Paragraph(typeset(text), style)
+
+
+def heading(text: str) -> Paragraph:
+    return Paragraph(text, HEADING)
+
+
+def period_at(results: ExperimentResults, amplitude_deg: float) -> float:
+    """Численный период для амплитуды из таблицы расчётов, с."""
+    index = results.period_amplitudes_deg.index(amplitude_deg)
+    return results.periods_s[index]
+
+
+def ref(label: str) -> str:
+    """Ссылка на формулу вида (5)."""
+    return f"({EQUATION_NUMBERS[label]})"
+
+
+def equation(tex: str, label: str | None = None) -> Flowable:
+    """Выключная формула mathtext; с меткой получает номер справа."""
+    buffer = BytesIO()
+    mathtext.math_to_image(
+        f"${tex}$", buffer,
+        prop=FontProperties(family="DejaVu Sans", size=EQUATION_SIZE),
+        dpi=EQUATION_DPI, format="png",
+    )
+    buffer.seek(0)
+    width, height = ImageReader(buffer).getSize()
+    buffer.seek(0)
+    scale = 72.0 / EQUATION_DPI
+    available = FRAME_WIDTH - 2.0 * NUMBER_WIDTH
+    if width * scale > available:
+        raise ValueError(f"Формула шире строки: {tex}")
+    image = Image(buffer, width=width * scale, height=height * scale)
+    if label is None:
+        image.spaceBefore, image.spaceAfter = 3, 7
+        return image
+    if label in EQUATION_NUMBERS:
+        raise ValueError(f"Метка формулы повторяется: {label}")
+    EQUATION_NUMBERS[label] = len(EQUATION_NUMBERS) + 1
+    body = Table(
+        [[Spacer(1, 1), image, Paragraph(ref(label), NUMBER)]],
+        colWidths=[NUMBER_WIDTH, available, NUMBER_WIDTH],
+    )
+    body.setStyle(TableStyle([
+        ("ALIGN", (1, 0), (1, 0), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    body.spaceBefore, body.spaceAfter = 3, 7
+    return body
+
+
+def figure(name: str, caption: str, width: float = FRAME_WIDTH) -> KeepTogether:
+    """Рисунок из report/figures с подписью."""
+    path = str(FIGURES_DIR / f"{name}.png")
+    pixel_width, pixel_height = ImageReader(path).getSize()
+    image = Image(path, width=width, height=width * pixel_height / pixel_width)
+    return KeepTogether([image, Paragraph(typeset(caption), CAPTION)])
+
+
+def table(
+    caption: str, rows: Sequence[Sequence[str]], widths: Sequence[float]
+) -> KeepTogether:
+    """Таблица с подписью; первая строка — заголовок."""
+    cells = [[Paragraph(typeset(text), CELL_HEADER) for text in rows[0]]]
+    cells += [[Paragraph(typeset(text), CELL) for text in row] for row in rows[1:]]
+    body = Table(cells, colWidths=list(widths))
+    body.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e4edf3")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.white, colors.HexColor("#f4f7f9")]),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.6, MUTED),
+        ("LINEBELOW", (0, -1), (-1, -1), 0.6, MUTED),
+    ]))
+    return KeepTogether([Paragraph(caption, CAPTION), body, Spacer(1, 10)])
+
+
+def title_page() -> list[Flowable]:
+    return [
+        Spacer(1, 170),
+        Paragraph("Физический маятник", TITLE),
+        Paragraph("Проект М5, курс «Цифровизация физических процессов»", SUBTITLE),
+        Spacer(1, 40),
+        Paragraph("Авторы: Кашков Сергей, Богославский Родион", SUBTITLE),
+        Paragraph("2026", SUBTITLE),
+        Spacer(1, 120),
+        paragraph(
+            "Маятник — графитовый стержень с латунным грузом на нижнем конце, "
+            "ось проходит через верхний конец стержня. По форме тела рассчитан "
+            "момент инерции, уравнение колебаний решено численно без трения и "
+            "с малым вязким трением, изучена зависимость периода от амплитуды "
+            "и проверено сохранение энергии. Результаты сравниваются с "
+            "теоретическими формулами, вывод которых тоже приведён. Выполнена "
+            "только основная часть задания."
+        ),
+        PageBreak(),
+    ]
+
+
+def section_body(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    mm = 1000.0
+    rows = [
+        ["Величина", "Значение", "Комментарий"],
+        ["Длина стержня <i>L</i>", number(100 * p.rod_length_m, 1) + " см", ""],
+        ["Радиус стержня <i>R</i>", number(mm * p.rod_radius_m, 0) + " мм", ""],
+        ["Плотность графита <i>ρ</i><sub>ст</sub>",
+         number(p.rod_density_kg_m3 / 1e3, 1) + " г/см³", "типичная для графита"],
+        ["Масса стержня <i>m</i><sub>ст</sub>",
+         number(1e3 * p.rod_mass_kg, 2) + " г", "расчёт, формула (1)"],
+        [f"Размеры груза <i>w</i> {TIMES} <i>h</i> {TIMES} <i>s</i>",
+         f"{number(mm * p.bob_width_m, 0)} {TIMES} "
+         f"{number(mm * p.bob_height_m, 0)} {TIMES} "
+         f"{number(mm * p.bob_depth_m, 0)} мм",
+         "<i>w</i> — поперёк стержня, <i>h</i> — вдоль стержня, "
+         "<i>s</i> — вдоль оси"],
+        ["Плотность латуни <i>ρ</i><sub>гр</sub>",
+         number(p.bob_density_kg_m3 / 1e3, 1) + " г/см³", "типичная для латуни"],
+        ["Масса груза <i>m</i><sub>гр</sub>",
+         number(1e3 * p.bob_mass_kg, 2) + " г", "расчёт, формула (2)"],
+        ["Ускорение свободного падения <i>g</i>",
+         number(p.gravity_m_s2, 5) + " м/с²", ""],
+        ["Время полузатухания амплитуды <i>t</i><sub>½</sub>",
+         number(p.amplitude_half_life_s, 0) + " с", "задаёт малое трение"],
+    ]
+    return [
+        heading("1. Постановка задачи и параметры тела"),
+        paragraph(
+            "Моделируется физический маятник — твёрдое тело, которое качается в "
+            "вертикальной плоскости вокруг горизонтальной оси в поле тяжести. "
+            "Тело составлено из двух простых форм: графитового стержня-цилиндра "
+            "и латунного груза-параллелепипеда, закреплённого на нижнем конце "
+            "стержня. Ось перпендикулярна плоскости качания и проходит через "
+            "верхний конец стержня. Все входные параметры собраны в файле "
+            "physical_pendulum/config.py."
+        ),
+        table("Таблица 1. Параметры маятника", rows, [195.0, 100.0, 200.0]),
+        paragraph("Массы стержня и груза считаются по их объёму и плотности:"),
+        equation(rf"m{ST} = \rho{ST}\,\pi R^2 L = "
+                 rf"{tex_number(1e3 * p.rod_mass_kg, 2)}{unit('г')}", "m_rod"),
+        equation(rf"m{GR} = \rho{GR}\,w\,h\,s = "
+                 rf"{tex_number(1e3 * p.bob_mass_kg, 2)}{unit('г')}", "m_bob"),
+        equation(rf"m = m{ST} + m{GR} = {tex_number(1e3 * p.mass_kg, 2)}{unit('г')}"),
+        figure("geometry", "Рис. 1. Слева: маятник в равновесии и его размеры. "
+               "Справа: отклонение на угол <i>θ</i>, сила тяжести и её плечо "
+               "относительно оси. Масштаб соблюдён.", width=330.0),
+    ]
+
+
+def section_inertia(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    rod = p.rod_mass_kg * (p.rod_length_m**2 / 3 + p.rod_radius_m**2 / 4)
+    bob = p.inertia_kg_m2 - rod
+    return [
+        heading("2. Момент инерции и центр масс"),
+        paragraph(
+            "Момент инерции тела относительно оси равен сумме моментов инерции "
+            "стержня и груза:"
+        ),
+        equation(rf"I = I{ST} + I{GR}", "inertia_sum"),
+        paragraph(
+            "<b>Стержень.</b> Момент инерции цилиндра относительно поперечной оси "
+            "через его центр известен; ось подвеса сдвинута на <i>L</i>/2, "
+            "поэтому по теореме Штейнера:"
+        ),
+        equation(rf"I{ST} = m{ST}\left(\dfrac{{L^2}}{{12}} + \dfrac{{R^2}}{{4}}"
+                 rf"\right) + m{ST}\left(\dfrac{{L}}{{2}}\right)^2 = "
+                 rf"m{ST}\left(\dfrac{{L^2}}{{3}} + \dfrac{{R^2}}{{4}}\right)",
+                 "inertia_rod"),
+        paragraph(
+            "<b>Груз.</b> Момент инерции параллелепипеда относительно оси через "
+            "центр, параллельной ребру <i>s</i>:"
+        ),
+        equation(rf"I_c = m{GR}\,\dfrac{{w^2 + h^2}}{{12}}"),
+        paragraph("Центр груза находится на расстоянии <i>a</i> от оси:"),
+        equation(r"a = L - \dfrac{h}{2}"),
+        paragraph("По теореме Штейнера:"),
+        equation(rf"I{GR} = I_c + m{GR}a^2 = "
+                 rf"m{GR}\left(a^2 + \dfrac{{w^2 + h^2}}{{12}}\right)", "inertia_bob"),
+        paragraph(
+            "<b>Центр масс.</b> Центр масс стержня лежит в его середине, центр "
+            "масс груза — в центре груза. Расстояние от оси до центра масс тела:"
+        ),
+        equation(rf"d = \dfrac{{m{ST}\,L/2 + m{GR}\,a}}{{m{ST} + m{GR}}}",
+                 "center"),
+        paragraph(
+            "Подставляем параметры из таблицы 1: <i>a</i> = "
+            f"{number(100 * p.bob_distance_m, 1)} см, <i>d</i> = "
+            f"{number(100 * p.center_of_mass_m, 2)} см, момент инерции"
+        ),
+        equation(rf"I = I{ST} + I{GR} = {tex_scientific(rod, 3)} + "
+                 rf"{tex_scientific(bob, 3)} = "
+                 rf"{tex_scientific(p.inertia_kg_m2, 4)}{unit(r'кг\cdot м^2')}"),
+        paragraph(
+            f"Стержень легче груза в {number(p.bob_mass_kg / p.rod_mass_kg, 0)} "
+            "раз, и его доля в моменте инерции всего "
+            f"{number(100 * rod / p.inertia_kg_m2, 1)} %."
+        ),
+    ]
+
+
+def section_motion(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    return [
+        heading("3. Уравнение движения и энергия"),
+        paragraph(
+            "Угол <i>θ</i> отсчитывается от вертикали, угловая скорость "
+            "<i>ω</i> — производная угла. Тело вращается вокруг неподвижной "
+            "оси, поэтому уравнение моментов относительно оси имеет вид"
+        ),
+        equation(r"I\ddot\theta = M"),
+        paragraph(
+            "Сила тяжести приложена в центре масс на расстоянии <i>d</i> от оси, "
+            "её плечо при отклонении на угол <i>θ</i> равно проекции <i>d</i> на "
+            "горизонталь (рис. 1). Вязкое трение в оси даёт момент, "
+            "пропорциональный угловой скорости:"
+        ),
+        equation(r"M = -mgd\,\sin\theta - b\,\dot\theta\quad\Rightarrow\quad "
+                 r"I\ddot\theta = -mgd\,\sin\theta - b\,\dot\theta", "motion"),
+        paragraph(
+            f"<b>Энергия.</b> Умножим {ref('motion')} на <i>ω</i> и воспользуемся "
+            "тем, что"
+        ),
+        equation(r"\omega\dot\omega = \dfrac{d}{dt}\dfrac{\omega^2}{2},\qquad "
+                 r"\omega\sin\theta = \dfrac{d}{dt}(1 - \cos\theta)"),
+        paragraph("Получаем"),
+        equation(r"\dfrac{d}{dt}\left[\dfrac{I\omega^2}{2} + "
+                 r"mgd\,(1 - \cos\theta)\right] = -b\,\omega^2"),
+        paragraph(
+            "В скобках стоит полная механическая энергия: кинетическая энергия "
+            "вращения и потенциальная энергия центра масс, отсчитанная от "
+            "положения равновесия:"
+        ),
+        equation(r"E = \dfrac{I\omega^2}{2} + mgd\,(1 - \cos\theta),\qquad "
+                 r"\dfrac{dE}{dt} = -b\,\omega^2 \leq 0", "energy"),
+        paragraph(
+            "Без трения энергия постоянна, с трением убывает. Убыль энергии "
+            "переходит в теплоту <i>Q</i>, и их сумма сохраняется:"
+        ),
+        equation(r"Q(t) = \int_0^t b\,\omega^2\,dt,\qquad E(t) + Q(t) = E_0",
+                 "balance"),
+        paragraph(
+            "<b>Малые колебания.</b> При малых углах синус можно заменить самим "
+            f"углом. Без трения {ref('motion')} переходит в уравнение "
+            "гармонических колебаний:"
+        ),
+        equation(r"\sin\theta \approx \theta\quad\Rightarrow\quad "
+                 r"\ddot\theta + \omega_0^2\,\theta = 0,\qquad "
+                 r"\omega_0 = \sqrt{\dfrac{mgd}{I}}", "harmonic"),
+        paragraph(
+            "Маятник отпускается без начальной скорости с отклонения <i>A</i>. "
+            "Решение с такими начальными условиями и его период:"
+        ),
+        equation(r"\theta(0) = A,\quad \dot\theta(0) = 0\quad\Rightarrow\quad "
+                 r"\theta(t) = A\cos\omega_0 t", "harmonic_solution"),
+        equation(rf"T_0 = \dfrac{{2\pi}}{{\omega_0}} = "
+                 rf"2\pi\sqrt{{\dfrac{{I}}{{mgd}}}} = "
+                 rf"{tex_number(small_angle_period_s(p), 5)}{unit('с')}", "t0"),
+        paragraph(
+            "Период малых колебаний не зависит от амплитуды. Это свойство "
+            "называется изохронностью [2]."
+        ),
+    ]
+
+
+def section_period_theory() -> list[Flowable]:
+    return [
+        heading("4. Период при большой амплитуде"),
+        paragraph(
+            "При большой амплитуде замена синуса углом не годится, и период "
+            "находим из закона сохранения энергии без трения. В крайнем "
+            "положении угол равен <i>A</i>, а скорость равна нулю, поэтому"
+        ),
+        equation(r"\dfrac{I\omega^2}{2} + mgd\,(1 - \cos\theta) = "
+                 r"mgd\,(1 - \cos A)\quad\Rightarrow\quad "
+                 r"\omega^2 = 2\omega_0^2\,(\cos\theta - \cos A)"),
+        paragraph(
+            "За четверть периода маятник проходит от нуля до <i>A</i>, "
+            "отсюда"
+        ),
+        equation(r"T = 4\int_0^A \dfrac{d\theta}{\omega} = \dfrac{4}{\omega_0}"
+                 r"\int_0^A \dfrac{d\theta}{\sqrt{2\,(\cos\theta - \cos A)}}"),
+        paragraph(
+            "Воспользуемся формулой для косинуса через синус половинного угла "
+            "и обозначим <i>k</i> синус половины амплитуды:"
+        ),
+        equation(r"1 - \cos\theta = 2\sin^2\dfrac{\theta}{2},\qquad "
+                 r"k = \sin\dfrac{A}{2},\qquad "
+                 r"\cos\theta - \cos A = 2\left(k^2 - \sin^2\dfrac{\theta}{2}"
+                 r"\right)"),
+        paragraph(
+            "Сделаем замену переменной <i>θ</i> на <i>φ</i>. Пределы "
+            "интегрирования тоже меняются:"
+        ),
+        equation(r"\sin\dfrac{\theta}{2} = k\sin\varphi,\qquad "
+                 r"0 \leq \theta \leq A\quad\Rightarrow\quad "
+                 r"0 \leq \varphi \leq \dfrac{\pi}{2}"),
+        paragraph("Дифференциал и корень в знаменателе:"),
+        equation(r"\dfrac{1}{2}\cos\dfrac{\theta}{2}\,d\theta = "
+                 r"k\cos\varphi\,d\varphi\quad\Rightarrow\quad "
+                 r"d\theta = \dfrac{2k\cos\varphi\,d\varphi}"
+                 r"{\sqrt{1 - k^2\sin^2\varphi}}"),
+        equation(r"\sqrt{k^2 - \sin^2\dfrac{\theta}{2}} = "
+                 r"\sqrt{k^2 - k^2\sin^2\varphi} = k\cos\varphi"),
+        paragraph("После подстановки множитель с косинусом сокращается:"),
+        equation(r"T = \dfrac{4}{\omega_0}\int_0^{\pi/2}"
+                 r"\dfrac{d\varphi}{\sqrt{1 - k^2\sin^2\varphi}} = "
+                 r"\dfrac{4}{\omega_0}\,K(k^2),\qquad k^2 = \sin^2\dfrac{A}{2}",
+                 "exact"),
+        paragraph(
+            "Здесь <i>K</i> — полный эллиптический интеграл первого рода, по "
+            "определению"
+        ),
+        equation(r"K(m) = \int_0^{\pi/2}\dfrac{d\varphi}"
+                 r"{\sqrt{1 - m\sin^2\varphi}}"),
+        paragraph(
+            "Через элементарные функции он не выражается. В программе он "
+            "считается функцией scipy.special.ellipk(m) [5], которая принимает "
+            "как раз параметр <i>m</i>, то есть квадрат <i>k</i>."
+        ),
+        paragraph(
+            "<b>Ряд.</b> При небольших <i>k</i> разложим подынтегральную "
+            "функцию по степеням <i>k</i>:"
+        ),
+        equation(r"\dfrac{1}{\sqrt{1 - k^2\sin^2\varphi}} \approx 1 + "
+                 r"\dfrac{k^2}{2}\sin^2\varphi + \dfrac{3k^4}{8}\sin^4\varphi"),
+        paragraph("Интегралы от степеней синуса:"),
+        equation(r"\int_0^{\pi/2}\sin^2\varphi\,d\varphi = \dfrac{\pi}{4},\qquad "
+                 r"\int_0^{\pi/2}\sin^4\varphi\,d\varphi = \dfrac{3\pi}{16}"),
+        paragraph("Получаем"),
+        equation(r"K(k^2) \approx \dfrac{\pi}{2}\left(1 + \dfrac{k^2}{4} + "
+                 r"\dfrac{9k^4}{64}\right)"),
+        paragraph("Выразим <i>k</i> через амплитуду, оставляя члены до четвёртой "
+                  "степени:"),
+        equation(r"k^2 = \sin^2\dfrac{A}{2} \approx \left(\dfrac{A}{2} - "
+                 r"\dfrac{A^3}{48}\right)^2 \approx \dfrac{A^2}{4} - "
+                 r"\dfrac{A^4}{48}"),
+        equation(r"\dfrac{k^2}{4} + \dfrac{9k^4}{64} \approx \dfrac{A^2}{16} - "
+                 r"\dfrac{A^4}{192} + \dfrac{9A^4}{1024} = \dfrac{A^2}{16} + "
+                 r"\dfrac{11A^4}{3072}"),
+        paragraph("Множитель перед скобкой равен периоду малых колебаний:"),
+        equation(r"\dfrac{4}{\omega_0}\cdot\dfrac{\pi}{2} = "
+                 r"\dfrac{2\pi}{\omega_0} = T_0"),
+        paragraph("В итоге"),
+        equation(r"T \approx T_0\left(1 + \dfrac{A^2}{16} + "
+                 r"\dfrac{11A^4}{3072}\right)", "series"),
+        paragraph(
+            "Ряд годится, пока амплитуда заметно меньше радиана. При больших "
+            f"амплитудах нужна точная формула {ref('exact')}."
+        ),
+    ]
+
+
+def section_damped_theory(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    ratio = p.decay_rate_1_s / p.natural_frequency_rad_s
+    return [
+        heading("5. Малые затухающие колебания"),
+        paragraph(
+            f"При малых углах с трением уравнение {ref('motion')} после деления "
+            "на <i>I</i> принимает вид"
+        ),
+        equation(r"\ddot\theta + 2\beta\,\dot\theta + \omega_0^2\,\theta = 0,"
+                 r"\qquad \beta = \dfrac{b}{2I}", "damped_equation"),
+        paragraph("Ищем решение в виде экспоненты:"),
+        equation(r"\theta = e^{\lambda t}\quad\Rightarrow\quad "
+                 r"\lambda^2 + 2\beta\lambda + \omega_0^2 = 0\quad\Rightarrow"
+                 r"\quad \lambda = -\beta \pm i\,\omega_d,\qquad "
+                 r"\omega_d = \sqrt{\omega_0^2 - \beta^2}"),
+        paragraph(
+            "Действительное решение, которое начинается с отклонения <i>A</i> "
+            "без начальной скорости:"
+        ),
+        equation(r"\theta = A e^{-\beta t}\left(\cos\omega_d t + "
+                 r"\dfrac{\beta}{\omega_d}\sin\omega_d t\right)"),
+        paragraph(
+            "При слабом трении второе слагаемое в скобках мало, и колебания "
+            "происходят с экспоненциально убывающей амплитудой [3]:"
+        ),
+        equation(r"\beta \ll \omega_0\quad\Rightarrow\quad "
+                 r"\theta \approx A e^{-\beta t}\cos\omega_d t,\qquad "
+                 r"T_d = \dfrac{2\pi}{\omega_d}", "damped_solution"),
+        paragraph(
+            "Трение задаём временем <i>t</i><sub>½</sub>, за которое амплитуда "
+            "уменьшается вдвое. Отсюда коэффициент затухания и коэффициент "
+            "трения:"
+        ),
+        equation(r"e^{-\beta t_{1/2}} = \dfrac{1}{2}\quad\Rightarrow\quad "
+                 r"\beta = \dfrac{\ln 2}{t_{1/2}},\qquad b = 2I\beta",
+                 "half_life"),
+        paragraph(
+            "Энергия малых колебаний пропорциональна квадрату амплитуды: в "
+            "крайнем положении скорость равна нулю и вся энергия "
+            "потенциальная. Поэтому энергия убывает вдвое быстрее амплитуды:"
+        ),
+        equation(r"E \approx mgd\,(1 - \cos\theta_{\max}) \approx "
+                 r"\dfrac{mgd\,\theta_{\max}^2}{2}\quad\Rightarrow\quad "
+                 r"E \approx E_0\,e^{-2\beta t}", "damped_energy"),
+        paragraph("Для нашего маятника:"),
+        equation(rf"\beta = \dfrac{{\ln 2}}{{{tex_number(p.amplitude_half_life_s, 0)}"
+                 rf"{unit('с')}}} = {tex_number(p.decay_rate_1_s, 4)}"
+                 rf"{unit(r'с^{-1}')},\qquad b = 2I\beta = "
+                 rf"{tex_scientific(p.damping_n_m_s, 2)}"
+                 rf"{unit(r'Н\cdot м\cdot с')}"),
+        equation(rf"\dfrac{{\beta}}{{\omega_0}} = {tex_scientific(ratio)}"),
+        paragraph("Трение действительно малое."),
+    ]
+
+
+def section_method() -> list[Flowable]:
+    return [
+        heading("6. Численный метод"),
+        paragraph(
+            f"Уравнение {ref('motion')} решается численно методом Рунге — Кутты "
+            "(функция scipy.integrate.solve_ivp [4]). Маятник отпускается без "
+            "начальной скорости с отклонения на угол <i>A</i>. По найденным "
+            f"<i>θ</i>(<i>t</i>) и <i>ω</i>(<i>t</i>) энергия считается по формуле "
+            f"{ref('energy')}, а теплота <i>Q</i> — по формуле {ref('balance')}."
+        ),
+        paragraph(
+            "Период находим по графику <i>θ</i>(<i>t</i>) как время между двумя "
+            "соседними прохождениями положения равновесия в одну сторону; "
+            "по всем колебаниям расчёта это время усредняется."
+        ),
+    ]
+
+
+def section_free(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    small, large = results.small, results.large
+    small_deg = degrees(small.amplitude_rad)
+    large_deg = degrees(large.amplitude_rad)
+    t0 = small_angle_period_s(p)
+    return [
+        heading("7. Свободные колебания без трения и сохранение энергии"),
+        paragraph(
+            f"При амплитуде {number(small_deg, 0)}° численное решение совпадает с "
+            f"гармоническим {ref('harmonic_solution')} (рис. 2). Измеренный "
+            f"период и период малых колебаний {ref('t0')}:"
+        ),
+        equation(rf"T_{{\mathrm{{расч}}}} = {tex_number(small.period_s, 5)}"
+                 rf"{unit('с')},\qquad T_0 = {tex_number(t0, 5)}{unit('с')}"),
+        paragraph(
+            "Небольшая разница — это уже поправка на конечную амплитуду из "
+            f"ряда {ref('series')}. При {number(large_deg, 0)}° период равен "
+            f"{number(large.period_s, 5)} с, он на "
+            f"{number(100 * (large.period_s / t0 - 1), 1)} % больше "
+            "<i>T</i><sub>0</sub>, и численное решение заметно отстаёт от "
+            "гармонического."
+        ),
+        figure("free", "Рис. 2. Свободные колебания при "
+               f"{number(small_deg, 0)}° и {number(large_deg, 0)}°: численное "
+               f"решение и гармоническое решение {ref('harmonic_solution')}. "
+               "Внизу — относительная погрешность энергии (наибольшая с начала "
+               "расчёта).", 360.0),
+        paragraph(
+            "<b>Погрешность энергии.</b> Без трения энергия "
+            f"{ref('energy')} должна сохраняться. Численное решение приближённое, "
+            "и вычисленная по нему энергия немного отличается от начальной. "
+            "Это отличие показывает точность расчёта:"
+        ),
+        equation(r"\delta_E = \max_t\,\dfrac{|E(t) - E_0|}{E_0}", "energy_error"),
+        equation(rf"\delta_E({number(small_deg, 0)}\degree) = "
+                 rf"{tex_scientific(small.energy_relative_error)},\qquad "
+                 rf"\delta_E({number(large_deg, 0)}\degree) = "
+                 rf"{tex_scientific(large.energy_relative_error)}"),
+        paragraph(
+            "Это уровень ошибок округления чисел в компьютере, и за "
+            f"{number(FREE_DURATION_S, 0)} с расчёта энергия не уходит "
+            "(нижний график рис. 2). Чтобы при малых углах не терять точность "
+            "на вычитании близких чисел 1 и cos <i>θ</i>, потенциальная энергия "
+            "считается через синус половинного угла:"
+        ),
+        equation(r"U = mgd\,(1 - \cos\theta) = 2mgd\,\sin^2\dfrac{\theta}{2}"),
+    ]
+
+
+def section_period(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    t0 = small_angle_period_s(p)
+    pairs = list(zip(results.period_amplitudes_deg, results.periods_s))
+    rows = [["<i>A</i>, °", "<i>T</i><sub>расч</sub>, с", "<i>T</i><sub>ряд</sub>, с",
+             "<i>T</i><sub>точн</sub>, с", "<i>δ</i><sub><i>T</i></sub>",
+             "<i>T</i><sub>расч</sub> / <i>T</i><sub>0</sub>"]]
+    for amplitude, period in pairs:
+        exact = exact_period_s(p, radians(amplitude))
+        rows.append([
+            number(amplitude, 0), number(period, 5),
+            number(series_period_s(p, radians(amplitude)), 5), number(exact, 5),
+            scientific(period / exact - 1.0), number(period / t0, 4),
+        ])
+    deviation = max(abs(period / exact_period_s(p, radians(amplitude)) - 1.0)
+                    for amplitude, period in pairs)
+
+    def series_error(amplitude_deg: float) -> float:
+        angle = radians(amplitude_deg)
+        return 100 * (1 - series_period_s(p, angle) / exact_period_s(p, angle))
+
+    moderate = degrees(results.large.amplitude_rad)
+    first, first_period = pairs[0]
+    largest, largest_period = pairs[-1]
+    moderate_period = results.large.period_s
+    t0 = small_angle_period_s(p)
+    return [
+        heading("8. Зависимость периода от амплитуды"),
+        paragraph(
+            "<b>Почему при малых углах период не зависит от амплитуды.</b> "
+            f"В гармоническом приближении {ref('harmonic')} возвращающий момент "
+            "пропорционален углу:"
+        ),
+        equation(r"M = -mgd\,\theta"),
+        paragraph(
+            "Если увеличить амплитуду вдвое, маятнику нужно пройти вдвое больший "
+            "путь, но и момент в каждой точке вдвое больше, поэтому он движется "
+            "вдвое быстрее. Время одного колебания остаётся тем же, период "
+            f"{ref('t0')} от амплитуды не зависит."
+        ),
+        paragraph(
+            "<b>Почему при больших углах период растёт.</b> В настоящем "
+            f"уравнении {ref('motion')} момент пропорционален синусу угла, а "
+            "синус растёт медленнее самого угла:"
+        ),
+        equation(r"M = -mgd\,\sin\theta,\qquad \sin\theta < \theta\quad "
+                 r"(\theta > 0)"),
+        paragraph("Отношение синуса к углу (угол в радианах):"),
+        equation(
+            r",\qquad ".join(
+                rf"\theta = {angle_deg:g}\degree:\ "
+                r"\dfrac{\sin\theta}{\theta}"
+                r" \approx "
+                + number(sin(radians(angle_deg)) / radians(angle_deg), 2)
+                .replace(",", "{,}")
+                for angle_deg in SINE_RATIO_ANGLES_DEG
+            )
+        ),
+        paragraph(
+            "При больших отклонениях маятник тянет к равновесию слабее, чем по "
+            "линейному закону, он "
+            "движется медленнее, и период растёт: при 60° на "
+            f"{number(100 * (period_at(results, 60.0) / t0 - 1), 1)} %, при 90° на "
+            f"{number(100 * (period_at(results, 90.0) / t0 - 1), 1)} % "
+            "(таблица 2)."
+        ),
+        paragraph(
+            f"Для каждой амплитуды из таблицы 2 уравнение {ref('motion')} без "
+            f"трения решалось заново на {number(PERIOD_DURATION_S, 0)} с, период "
+            "измерялся, как описано в разделе 6. В таблице численный "
+            f"период сравнивается с рядом {ref('series')} и точной формулой "
+            f"{ref('exact')}. Отличие расчёта от точной формулы:"
+        ),
+        equation(r"\delta_T = \dfrac{T_{\mathrm{расч}}}{T_{\mathrm{точн}}} - 1"),
+        table("Таблица 2. Период колебаний: численный расчёт и теория", rows,
+              [45.0, 82.0, 82.0, 82.0, 102.0, 102.0]),
+        figure("period", "Рис. 3. Период колебаний в зависимости от амплитуды: "
+               f"численный расчёт, ряд {ref('series')} и точная формула "
+               f"{ref('exact')}.", 340.0),
+        paragraph(
+            f"Отношение к периоду малых колебаний растёт от "
+            f"{number(first_period / t0, 4)} при {number(first, 0)}° до "
+            f"{number(largest_period / t0, 3)} при {number(largest, 0)}°: при "
+            f"{number(moderate, 0)}° период больше на "
+            f"{number(100 * (moderate_period / t0 - 1), 1)} %, при "
+            f"{number(largest, 0)}° — на "
+            f"{number(100 * (largest_period / t0 - 1), 0)} %. Численный период "
+            "совпадает с точной формулой:"
+        ),
+        equation(rf"\max\,|\delta_T| = {tex_scientific(deviation)}"),
+        paragraph("Погрешность ряда относительно точной формулы:"),
+        equation(r"\varepsilon = 1 - \dfrac{T_{\mathrm{ряд}}}{T_{\mathrm{точн}}}"
+                 rf",\qquad \varepsilon({number(moderate, 0)}\degree) = "
+                 rf"{tex_number(series_error(moderate), 2)}\%,\qquad "
+                 rf"\varepsilon({number(largest, 0)}\degree) = "
+                 rf"{tex_number(series_error(largest), 1)}\%"),
+        paragraph(
+            "Ряд хорошо работает до умеренных амплитуд, а при больших сильно "
+            "занижает период (рис. 3)."
+        ),
+    ]
+
+
+def section_damped(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    run = results.damped
+    fitted = fit_decay_rate_1_s(run)
+    duration = float(run.time_s[-1])
+    amplitude_deg = degrees(run.amplitude_rad)
+    return [
+        heading("9. Затухающие колебания"),
+        paragraph(
+            f"С трением {ref('half_life')} маятник отпускается с "
+            f"{number(amplitude_deg, 0)}°, расчёт идёт "
+            f"{number(duration, 0)} с. Амплитуда уменьшается по экспоненте "
+            "(рис. 4): на верхнем графике численное решение лежит внутри "
+            f"теоретической огибающей из {ref('damped_solution')}, внизу слева "
+            "максимумы в логарифмическом масштабе ложатся на прямую теории, "
+            f"внизу справа энергия совпадает с {ref('damped_energy')}."
+        ),
+        figure("damped", "Рис. 4. Затухающие колебания и энергия маятника.", 360.0),
+        paragraph(
+            "Коэффициент затухания по численному решению найден по наклону "
+            "логарифма максимумов угла от времени. Он совпадает с "
+            f"теоретическим {ref('half_life')}:"
+        ),
+        equation(rf"\beta_{{\mathrm{{расч}}}} = {tex_number(fitted, 5)}"
+                 rf"{unit(r'с^{-1}')},\qquad \beta = "
+                 rf"{tex_number(p.decay_rate_1_s, 5)}{unit(r'с^{-1}')}"),
+        paragraph(
+            "Малое трение период почти не меняет, расчёт и теория "
+            f"{ref('damped_solution')}:"
+        ),
+        equation(rf"T_{{\mathrm{{расч}}}} = {tex_number(run.period_s, 4)}"
+                 rf"{unit('с')},\qquad T_d = {tex_number(damped_period_s(p), 4)}"
+                 rf"{unit('с')}"),
+        paragraph(
+            "Энергия убывает из-за трения, а энергия вместе с выделившейся "
+            f"теплотой остаётся равной начальной {ref('balance')}:"
+        ),
+        equation(rf"\delta_{{E+Q}} = \max_t\,\dfrac{{|E(t) + Q(t) - E_0|}}{{E_0}}"
+                 rf" = {tex_scientific(run.balance_relative_error)}"),
+    ]
+
+
+def section_conclusions(results: ExperimentResults) -> list[Flowable]:
+    p = results.pendulum
+    t0 = small_angle_period_s(p)
+    largest, largest_period = (results.period_amplitudes_deg[-1],
+                               results.periods_s[-1])
+    return [
+        heading("10. Выводы"),
+        paragraph(
+            f"1. Момент инерции тела {scientific(p.inertia_kg_m2, 4)} кг·м² "
+            "рассчитан по формулам для цилиндра и параллелепипеда с теоремой "
+            "Штейнера."
+        ),
+        paragraph(
+            "2. При малой амплитуде численное решение совпадает с гармоническим, "
+            f"период малых колебаний {number(t0, 4)} с."
+        ),
+        paragraph(
+            "3. Период растёт с амплитудой: при "
+            f"{number(degrees(results.large.amplitude_rad), 0)}° на "
+            f"{number(100 * (results.large.period_s / t0 - 1), 1)} %, при "
+            f"{number(largest, 0)}° на {number(100 * (largest_period / t0 - 1), 0)} %. "
+            "Численный период совпадает с точной формулой через эллиптический "
+            "интеграл, ряд по степеням амплитуды годится до умеренных амплитуд."
+        ),
+        paragraph(
+            "4. Без трения относительная погрешность энергии порядка "
+            f"{power(1e-14)}, это уровень ошибок округления. С трением энергия "
+            "убывает, баланс энергии и теплоты выполняется с той же точностью, "
+            "амплитуда затухает по экспоненте с теоретическим коэффициентом "
+            "затухания."
+        ),
+        heading("11. Источники"),
+        *[Paragraph(f"{index}. {text}", SOURCE)
+          for index, text in enumerate(SOURCES, start=1)],
+    ]
+
+
+def register_fonts() -> None:
+    """Зарегистрировать DejaVu Sans из поставки matplotlib."""
+    fonts = {
+        FONT: FontProperties(family="DejaVu Sans"),
+        FONT_BOLD: FontProperties(family="DejaVu Sans", weight="bold"),
+        FONT_ITALIC: FontProperties(family="DejaVu Sans", style="oblique"),
+        FONT_BOLD_ITALIC: FontProperties(family="DejaVu Sans", weight="bold",
+                                         style="oblique"),
+    }
+    for name, properties in fonts.items():
+        path = font_manager.findfont(properties)
+        pdfmetrics.registerFont(TTFont(name, path))
+    pdfmetrics.registerFontFamily(FONT, normal=FONT, bold=FONT_BOLD,
+                                  italic=FONT_ITALIC, boldItalic=FONT_BOLD_ITALIC)
+
+
+def save_figures(results: ExperimentResults) -> None:
+    FIGURES_DIR.mkdir(exist_ok=True)
+    for old in FIGURES_DIR.glob("*.png"):
+        old.unlink()
+    for name, item in create_pendulum_figures(results).items():
+        item.savefig(FIGURES_DIR / f"{name}.png", dpi=FIGURE_DPI)
+        plt.close(item)
+
+
+def draw_footer(canvas: Canvas, document: BaseDocTemplate) -> None:
+    canvas.saveState()
+    canvas.setFont(FONT, 8)
+    canvas.setFillColor(MUTED)
+    canvas.drawString(MARGIN, 28, "Физический маятник · проект М5")
+    canvas.drawRightString(A4[0] - MARGIN, 28, str(document.page))
+    canvas.restoreState()
+
+
+def skip_footer(canvas: Canvas, document: BaseDocTemplate) -> None:
+    """Титульный лист без колонтитула."""
+
+
+def main() -> None:
+    register_fonts()
+    EQUATION_NUMBERS.clear()
+    results = run_experiments(DEFAULT_PENDULUM, DEFAULT_INTEGRATION)
+    save_figures(results)
+    document = SimpleDocTemplate(
+        str(PDF_PATH), pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
+        topMargin=MARGIN, bottomMargin=MARGIN, title="Физический маятник",
+        author="Кашков Сергей, Богославский Родион",
+        subject="Проект М5, курс «Цифровизация физических процессов»",
+    )
+    story = [
+        *title_page(), *section_body(results), *section_inertia(results),
+        *section_motion(results), *section_period_theory(),
+        *section_damped_theory(results), *section_method(),
+        *section_free(results), *section_period(results),
+        *section_damped(results), *section_conclusions(results),
+    ]
+    document.build(story, onFirstPage=skip_footer, onLaterPages=draw_footer)
+    print(f"Отчёт: {PDF_PATH}")
+
+
+if __name__ == "__main__":
+    main()
