@@ -1,0 +1,46 @@
+{
+  "parameters": {
+    "rod_length": 0.417,
+    "rod_radius": 0.002,
+    "rod_mass": 0.001,
+    "bob_mass": 0.1,
+    "bob_width": 0.028,
+    "bob_height": 0.028,
+    "bob_depth": 0.015,
+    "bob_distance": 0.35,
+    "gravity": 9.80665,
+    "amplitude_half_life": 30.0
+  },
+  "metrics": {
+    "inertia_kg_m2": 0.012321030666666666,
+    "rod_inertia_kg_m2": 5.7963999999999996e-05,
+    "bob_inertia_kg_m2": 0.012263066666666666,
+    "mass_kg": 0.101,
+    "center_of_mass_m": 0.34859900990099,
+    "equivalent_length_m": 0.34994477659277357,
+    "small_angle_period_s": 1.1869140978252597,
+    "damping_N_m_s": 0.0005693525112128416,
+    "beta_s_inverse": 0.023104906018664842,
+    "beta_fit_s_inverse": 0.023107622926949383,
+    "quality_factor": 114.55825194422263,
+    "damped_period_linear_s": 1.1869254031424072,
+    "damped_period_measured_s": 1.1871154702589954,
+    "free_energy_error": 1.923110395346771e-10,
+    "free_exact_angle_error_rad": 3.733746645195879e-10,
+    "damped_balance_error": 9.664603009971656e-12,
+    "large_damped_balance_error": 9.422335465915329e-11,
+    "damped_linear_max_error_deg": 0.10492168862160947
+  },
+  "versions": {
+    "python": "3.14.4",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1"
+  },
+  "integration": {
+    "method": "DOP853",
+    "rtol": 1e-10,
+    "atol": 1e-12,
+    "max_step_s": 0.03956380326084199
+  },
+  "damping_note": "Время полузатухания 30 с - предположение, не измерение PASCO."
+}
