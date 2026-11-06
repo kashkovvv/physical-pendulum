@@ -323,10 +323,14 @@ def section_body(results: ExperimentResults) -> list[Flowable]:
             "physical_pendulum/config.py."
         ),
         table("Таблица 1. Параметры маятника", rows, [195.0, 100.0, 200.0]),
-        paragraph("Массы стержня и груза считаются по их объёму и плотности:"),
+        paragraph(
+            "Массы стержня и груза считаются по их объёму и плотности. Стержень "
+            "проходит сквозь груз, поэтому из объёма груза вычитается отверстие "
+            "под стержень:"
+        ),
         equation(rf"m{ST} = \rho{ST}\,\pi R^2 L = "
                  rf"{tex_number(1e3 * p.rod_mass_kg, 2)}{unit('г')}", "m_rod"),
-        equation(rf"m{GR} = \rho{GR}\,w\,h\,s = "
+        equation(rf"m{GR} = \rho{GR}\,(w\,h\,s - \pi R^2 h) = "
                  rf"{tex_number(1e3 * p.bob_mass_kg, 2)}{unit('г')}", "m_bob"),
         equation(rf"m = m{ST} + m{GR} = {tex_number(1e3 * p.mass_kg, 2)}{unit('г')}"),
         figure("geometry", "Рис. 1. Слева: маятник в равновесии и его размеры. "

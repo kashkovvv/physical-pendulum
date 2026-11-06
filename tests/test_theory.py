@@ -16,7 +16,7 @@ from physical_pendulum.theory import (
 
 
 # Контрольный период малых колебаний, с.
-EXPECTED_SMALL_ANGLE_PERIOD_S: float = 1.26597
+EXPECTED_SMALL_ANGLE_PERIOD_S: float = 1.26572
 
 # Абсолютная погрешность сравнения контрольного периода, с.
 PERIOD_TOLERANCE_S: float = 1.0e-5

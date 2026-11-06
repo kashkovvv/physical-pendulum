@@ -110,9 +110,14 @@ class PendulumParameters:
 
     @property
     def bob_mass_kg(self) -> float:
-        """Масса груза m_гр = ρ·w·h·s, кг."""
-        volume = self.bob_width_m * self.bob_height_m * self.bob_depth_m
-        return self.bob_density_kg_m3 * volume
+        """Масса груза m_гр = ρ·(w·h·s - πR²h), кг.
+
+        Стержень проходит сквозь груз, поэтому из объёма бруска вычитается
+        отверстие под стержень длиной h.
+        """
+        block = self.bob_width_m * self.bob_height_m * self.bob_depth_m
+        hole = pi * self.rod_radius_m**2 * self.bob_height_m
+        return self.bob_density_kg_m3 * (block - hole)
 
     @property
     def mass_kg(self) -> float:
